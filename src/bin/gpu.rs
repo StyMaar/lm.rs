@@ -96,14 +96,35 @@ async fn inner(device: Device, queue: Queue, compute_pipeline: ComputePipeline, 
         mapped_at_creation: false,
     });
 
+    let matrix = [ 1, 0, 0, 0,
+                              0, 2, 0, 0,
+                              0, 0, 3, 0,
+                              0, 0, 0, 4u32 ];
+
     // Instantiates buffer with data (`numbers`).
     // Usage allowing the buffer to be:
     //   A storage buffer (can be bound within a bind group and thus available to a shader).
     //   The destination of a copy.
     //   The source of a copy.
-    let storage_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Storage Buffer"),
+    let input_vector_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Vector Buffer"),
         contents: bytemuck::cast_slice(numbers),
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC,
+    });
+
+    let matrix_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Matrix Buffer"),
+        contents: bytemuck::cast_slice(&matrix),
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC,
+    });
+
+    let output_vector_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Vector Buffer"),
+        contents: bytemuck::cast_slice(&[0, 0, 0, 0]),
         usage: wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC,
@@ -116,9 +137,18 @@ async fn inner(device: Device, queue: Queue, compute_pipeline: ComputePipeline, 
         label: None,
         layout: &bind_group_layout,
         entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: storage_buffer.as_entire_binding(),
-        }],
+                binding: 0,
+                resource: input_vector_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: matrix_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: output_vector_buffer.as_entire_binding(),
+            }
+        ]
     });
 
     // A command encoder executes one or many pipelines.
@@ -137,7 +167,7 @@ async fn inner(device: Device, queue: Queue, compute_pipeline: ComputePipeline, 
     }
     // Sets adds copy operation to command encoder.
     // Will copy data from storage buffer on GPU to staging buffer on CPU.
-    encoder.copy_buffer_to_buffer(&storage_buffer, 0, &staging_buffer, 0, size);
+    encoder.copy_buffer_to_buffer(&output_vector_buffer, 0, &staging_buffer, 0, size);
 
     // Submits command encoder for processing
     queue.submit(Some(encoder.finish()));

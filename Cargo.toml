@@ -17,6 +17,11 @@ clap = { version = "4.5.13", features = ["derive"] }
 tokio-tungstenite = { version = "0.23.1", optional = true }
 futures-util = { version = "0.3.28", default-features = false, features = ["sink", "std"], optional = true }
 tokio = { version = "1.0.0", features = ["full"], optional = true }
+wgpu = "22.1.0"
+flume = "0.11.0"
+bytemuck = "1.19.0"
+pollster = "0.3.0"
+env_logger = "0.11.5"
 
 [[bin]]
 name = "backend"

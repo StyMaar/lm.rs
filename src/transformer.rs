@@ -8,19 +8,22 @@ use crate::functional::u8_to_f32_slice;
 use crate::functional::u8_to_i8_slice;
 
 use crate::functional::SliceOrVec;
+use crate::gpu::{WgpuContext, Tensor};
 use crate::quantization::*;
 
 use memmap2::Mmap;
 use rayon::prelude::*;
 use std::mem::size_of;
 
-fn init_param<'a>(data: &'a [u8], offset: &mut usize, n: u32, size_each: u32) -> &'a [f32] {
-    let ptr: &[f32] =
-        u8_to_f32_slice(&data[*offset..(*offset + ((n * size_each) as usize * size_of::<f32>()))]);
+fn init_param<'a>(gpu_context: WgpuContext<'a>, offset: &mut usize, n: u32, size_each: u32) -> Tensor<'a> {
 
-    *offset += (n * size_each) as usize * size_of::<f32>();
+    todo!()
+    // let ptr: &[f32] =
+    //     u8_to_f32_slice(&data[*offset..(*offset + ((n * size_each) as usize * size_of::<f32>()))]);
 
-    ptr
+    // *offset += (n * size_each) as usize * size_of::<f32>();
+
+    // ptr
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -48,26 +51,26 @@ pub struct TransformerArgs {
 }
 
 pub struct TransformerWeights<'a> {
-    token_embedding_table: SliceOrVec<'a, f32>,
+    token_embedding_table: Tensor<'a>,
 
     // Attention
-    wq: &'a [f32],
-    wk: &'a [f32],
-    wv: &'a [f32],
-    wo: &'a [f32],
+    wq: Tensor<'a>,
+    wk: Tensor<'a>,
+    wv: Tensor<'a>,
+    wo: Tensor<'a>,
 
-    w_rms_att: &'a [f32],
+    w_rms_att: Tensor<'a>,
 
     // FFN
-    w1: &'a [f32],
-    w2: &'a [f32],
-    w3: &'a [f32],
+    w1: Tensor<'a>,
+    w2: Tensor<'a>,
+    w3: Tensor<'a>,
 
-    w_rms_post_att: &'a [f32],
+    w_rms_post_att: Tensor<'a>,
 
-    w_rms_final: &'a [f32],
+    w_rms_final: Tensor<'a>,
 
-    w_cls: &'a [f32],
+    w_cls: Tensor<'a>,
 }
 
 pub struct TransformerState {
@@ -116,6 +119,8 @@ impl<'a> Transformer<'a> {
         let mut offset: usize = 256;
 
         let kv_dim = cfg.head_size * cfg.n_kv_heads;
+
+        let gpu_context = WgpuContext::new(&data);
 
         let emb_tab = init_param(data, &mut offset, 1, cfg.vocab_size * cfg.dim);
         let rms_att = init_param(data, &mut offset, cfg.n_layers, cfg.dim);

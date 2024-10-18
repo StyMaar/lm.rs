@@ -5,25 +5,17 @@
 //! hello-compute example does not such as mapping buffers
 //! and why use the async channels.
 
-use std::mem::size_of_val;
+use std::{marker::PhantomData, mem::size_of_val};
 use wgpu::util::DeviceExt;
 
 const OVERFLOW: u32 = 0xffffffff;
 
 async fn run() {
-    let matrix = [ 1, 0, 0,
-                              0, 1, 0,
-                              0, 0, 1,
-                              0, 0, 1u32 ];
+    let matrix = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1u32];
 
     let context = WgpuContext::new(4, &matrix).await;
 
-    let vector = [
-        [1, 0, 0, 0],
-        [2, 2, 2, 2],
-        [1, 2, 3, 4],
-        [1, 4, 9, 16],
-    ];
+    let vector = [[1, 0, 0, 0], [2, 2, 2, 2], [1, 2, 3, 4], [1, 4, 9, 16]];
 
     let mut output_vec = [0, 0, 0];
     for ve in &vector {
@@ -32,6 +24,11 @@ async fn run() {
     }
 }
 
+// enum MatMulIO<'a> {
+//     CpuInBuffer(&'a [u32]),
+//     CpuOutBuffer(&'a mut [u32]),
+//     GpuBuffer(&'a wgpu::Buffer),
+// }
 
 async fn compute_malmul(input_vec: &[u32], output_vec: &mut [u32], context: &WgpuContext) {
     log::info!("Beginning GPU compute on data {input_vec:?}.");
@@ -56,7 +53,7 @@ async fn compute_malmul(input_vec: &[u32], output_vec: &mut [u32], context: &Wgp
         });
         compute_pass.set_pipeline(&context.pipeline);
         compute_pass.set_bind_group(0, &context.bind_group, &[]);
-        compute_pass.dispatch_workgroups(input_vec.len() as u32, 1, 1);
+        compute_pass.dispatch_workgroups(output_vec.len() as u32, 1, 1);
     }
     // We finish the compute pass by dropping it.
 
@@ -159,7 +156,6 @@ struct WgpuContext {
 
 impl WgpuContext {
     async fn new(input_size: usize, matrix: &[u32]) -> WgpuContext {
-
         let output_size = matrix.len() / input_size; // matrix size being equal to input_size x output_size
 
         let instance = wgpu::Instance::default();
@@ -186,7 +182,7 @@ impl WgpuContext {
         let input_vector_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Vector Buffer"),
             mapped_at_creation: false,
-            size: (input_size*4usize) as wgpu::BufferAddress,
+            size: (input_size * 4usize) as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
@@ -202,7 +198,7 @@ impl WgpuContext {
 
         let output_vector_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Vector Buffer"),
-            size: (output_size*4usize) as wgpu::BufferAddress,
+            size: (output_size * 4usize) as wgpu::BufferAddress,
             mapped_at_creation: false,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
@@ -211,7 +207,7 @@ impl WgpuContext {
 
         let output_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: (output_size*4usize) as wgpu::BufferAddress,
+            size: (output_size * 4usize) as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -260,7 +256,8 @@ impl WgpuContext {
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
+            entries: &[
+                wgpu::BindGroupEntry {
                     binding: 0,
                     resource: input_vector_buffer.as_entire_binding(),
                 },
@@ -271,7 +268,7 @@ impl WgpuContext {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: output_vector_buffer.as_entire_binding(),
-                }
+                },
             ],
         });
 
@@ -301,3 +298,4 @@ impl WgpuContext {
         }
     }
 }
+

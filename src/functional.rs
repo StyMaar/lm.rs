@@ -1,7 +1,7 @@
 use crate::quantization::{MutableQuantizedTensor, QuantizedTensor};
 
 use rayon::prelude::*;
-use std::convert::TryInto;
+use std::{convert::TryInto, ops::DerefMut};
 use std::ops::Deref;
 use wide::{f32x8, i32x8};
 
@@ -21,6 +21,34 @@ impl<'a, T> Deref for SliceOrVec<'a, T> {
         }
     }
 }
+
+// /// Allocs to use either a `Vec` or a slice in the same place
+// pub enum MutSliceOrVec<'a, T> {
+//     Slice(&'a mut [T]),
+//     Vec(Vec<T>),
+// }
+
+// impl<'a, T> Deref for MutSliceOrVec<'a, T> {
+//     type Target = [T];
+
+//     fn deref(&self) -> &[T] {
+//         match self {
+//             &Self::Slice(slice) => slice,
+//             &Self::Vec(ref vec) => &vec[..],
+//         }
+//     }
+// }
+
+
+// impl<'a, T> DerefMut for MutSliceOrVec<'a, T> {
+
+//     fn deref_mut(&mut self) -> &mut [T] {
+//         match self {
+//             &Self::Slice(slice) => slice,
+//             &Self::Vec(ref vec) => &mut vec[..],
+//         }
+//     }
+// }
 
 // Some helper functions
 
@@ -53,7 +81,7 @@ pub fn random_u32(mut state: u64) -> u32 {
     state ^= state << 25;
     state ^= state >> 27;
 
-    ((state * 0x2545F4914F6CDD1Du64) >> 32) as u32
+    ((state.wrapping_mul(0x2545F4914F6CDD1Du64)) >> 32) as u32
 }
 
 pub fn random_f32(state: u64) -> f32 {

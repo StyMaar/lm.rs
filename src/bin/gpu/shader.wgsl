@@ -22,6 +22,7 @@ fn matmul(column: u32) -> u32{
     return sum;
 }
 
+
 @compute
 @workgroup_size(1)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {

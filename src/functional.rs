@@ -1,10 +1,10 @@
 use crate::quantization::{MutableQuantizedTensor, QuantizedTensor};
 
-use rayon::prelude::*;
-use std::{convert::TryInto, ops::DerefMut};
-use std::ops::Deref;
-use wide::{f32x8, i32x8};
 use crate::gpu::Matrix;
+use rayon::prelude::*;
+use std::ops::Deref;
+use std::{convert::TryInto, ops::DerefMut};
+use wide::{f32x8, i32x8};
 
 /// Allocs to use either a `Vec` or a slice in the same place
 pub enum SliceOrVec<'a, T> {
@@ -39,7 +39,6 @@ impl<'a, T> Deref for SliceOrVec<'a, T> {
 //         }
 //     }
 // }
-
 
 // impl<'a, T> DerefMut for MutSliceOrVec<'a, T> {
 

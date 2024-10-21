@@ -5,15 +5,20 @@ use crate::functional::u8_to_f32_slice;
 use crate::functional::u8_to_i8_slice;
 
 use crate::functional::SliceOrVec;
-use crate::gpu::{WgpuContext, Vector, Weights, Cache, matmul};
+use crate::gpu::{matmul, Cache, Vector, Weights, WgpuContext};
 use crate::quantization::*;
 
 use memmap2::Mmap;
 use rayon::prelude::*;
 use std::mem::size_of;
 
-fn init_param<'a>(gpu_context: &WgpuContext<'a>, data: &[u8], offset: &mut usize, n: u32, size_each: u32) -> Weights<'a> {
-
+fn init_param<'a>(
+    gpu_context: &WgpuContext<'a>,
+    data: &[u8],
+    offset: &mut usize,
+    n: u32,
+    size_each: u32,
+) -> Weights<'a> {
     todo!()
     // let ptr: &[f32] =
     //     u8_to_f32_slice(&data[*offset..(*offset + ((n * size_each) as usize * size_of::<f32>()))]);
@@ -149,9 +154,27 @@ impl<'a> Transformer<'a> {
         );
         let rms_post_att = init_param(&gpu_context, data, &mut offset, cfg.n_layers, cfg.dim);
 
-        let w1 = init_param(&gpu_context, data, &mut offset, cfg.n_layers, cfg.dim * cfg.hidden_dim);
-        let w2 = init_param(&gpu_context, data, &mut offset, cfg.n_layers, cfg.dim * cfg.hidden_dim);
-        let w3 = init_param(&gpu_context, data, &mut offset, cfg.n_layers, cfg.dim * cfg.hidden_dim);
+        let w1 = init_param(
+            &gpu_context,
+            data,
+            &mut offset,
+            cfg.n_layers,
+            cfg.dim * cfg.hidden_dim,
+        );
+        let w2 = init_param(
+            &gpu_context,
+            data,
+            &mut offset,
+            cfg.n_layers,
+            cfg.dim * cfg.hidden_dim,
+        );
+        let w3 = init_param(
+            &gpu_context,
+            data,
+            &mut offset,
+            cfg.n_layers,
+            cfg.dim * cfg.hidden_dim,
+        );
 
         let rms_final = init_param(&gpu_context, data, &mut offset, 1, cfg.dim);
 
@@ -203,7 +226,7 @@ impl<'a> Transformer<'a> {
         let hidden_dim = p.hidden_dim;
         let gs = p.group_size;
 
-        // 
+        //
         x.copy_from_slice(
             &w.token_embedding_table[(token * dim) as usize..(token * dim + dim) as usize].data(),
         );
@@ -288,7 +311,8 @@ impl<'a> Transformer<'a> {
                 }
             }
 
-            s.xb3.data_mut()
+            s.xb3
+                .data_mut()
                 .par_chunks_mut(head_size as usize)
                 .enumerate()
                 .for_each(|(h, xb)| {
@@ -331,7 +355,6 @@ impl<'a> Transformer<'a> {
                     }
                 });
 
-
             matmul(
                 &mut s.xb2,
                 &s.xb3,
@@ -371,7 +394,7 @@ impl<'a> Transformer<'a> {
                     ..(l * dim * hidden_dim + dim * hidden_dim) as usize],
             );
 
-            let hb = s.hb.data_mut(); 
+            let hb = s.hb.data_mut();
             let hb2 = s.hb2.data();
             for i in 0..hidden_dim {
                 let mut val = hb[i as usize];
@@ -412,4 +435,3 @@ impl<'a> Transformer<'a> {
         s.logits.data_mut()
     }
 }
-

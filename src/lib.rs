@@ -1,3 +1,5 @@
+#![allow(warnings)]
+
 pub mod functional;
 pub mod quantization;
 pub mod sampler;

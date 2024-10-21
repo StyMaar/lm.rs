@@ -1,6 +1,3 @@
-use crate::functional::matmul;
-use crate::functional::matmul_q4;
-use crate::functional::matmul_q8;
 use crate::functional::rmsnorm;
 use crate::functional::slice_to_u32;
 use crate::functional::softmax;
@@ -8,14 +5,14 @@ use crate::functional::u8_to_f32_slice;
 use crate::functional::u8_to_i8_slice;
 
 use crate::functional::SliceOrVec;
-use crate::gpu::{WgpuContext, Tensor};
+use crate::gpu::{WgpuContext, Vector, Weights, Cache, matmul};
 use crate::quantization::*;
 
 use memmap2::Mmap;
 use rayon::prelude::*;
 use std::mem::size_of;
 
-fn init_param<'a>(gpu_context: WgpuContext<'a>, offset: &mut usize, n: u32, size_each: u32) -> Weights<'a> {
+fn init_param<'a>(gpu_context: &WgpuContext<'a>, data: &[u8], offset: &mut usize, n: u32, size_each: u32) -> Weights<'a> {
 
     todo!()
     // let ptr: &[f32] =
@@ -73,29 +70,29 @@ pub struct TransformerWeights<'a> {
     w_cls: Weights<'a>,
 }
 
-pub struct TransformerState {
-    x: Vec<f32>,
-    xb: Vec<f32>,
-    xb2: Vec<f32>,
-    xb3: Vec<f32>,
-    hb: Vec<f32>,
-    hb2: Vec<f32>,
-    q: Vec<f32>,
-    logits: Vec<f32>,
+pub struct TransformerState<'a> {
+    x: Vector<'a>,
+    xb: Vector<'a>,
+    xb2: Vector<'a>,
+    xb3: Vector<'a>,
+    hb: Vector<'a>,
+    hb2: Vector<'a>,
+    q: Vector<'a>,
+    logits: Vector<'a>,
 
     // kv cache
-    key_cache: Vec<f32>,
-    value_cache: Vec<f32>,
+    key_cache: Cache<'a>,
+    value_cache: Cache<'a>,
 }
 
 pub struct Transformer<'a> {
     pub args: TransformerArgs,
     weights: TransformerWeights<'a>,
-    state: TransformerState,
+    state: TransformerState<'a>,
 }
 
 impl<'a> Transformer<'a> {
-    pub fn new(data: &'a Mmap) -> Transformer<'a> {
+    pub fn new(data: &'a Mmap, gpu_context: &'a WgpuContext) -> Transformer<'a> {
         assert_eq!(
             data[0..4],
             [0x6c, 0x6d, 0x72, 0x73],
@@ -120,44 +117,46 @@ impl<'a> Transformer<'a> {
 
         let kv_dim = cfg.head_size * cfg.n_kv_heads;
 
-        let gpu_context = WgpuContext::new(&data);
-
-        let emb_tab = init_param(data, &mut offset, 1, cfg.vocab_size * cfg.dim);
-        let rms_att = init_param(data, &mut offset, cfg.n_layers, cfg.dim);
+        let emb_tab = init_param(&gpu_context, data, &mut offset, 1, cfg.vocab_size * cfg.dim);
+        let rms_att = init_param(&gpu_context, data, &mut offset, cfg.n_layers, cfg.dim);
         let wq = init_param(
+            &gpu_context,
             data,
             &mut offset,
             cfg.n_layers,
             cfg.dim * cfg.n_heads * head_size,
         );
         let wk = init_param(
+            &gpu_context,
             data,
             &mut offset,
             cfg.n_layers,
             cfg.dim * cfg.n_kv_heads * head_size,
         );
         let wv = init_param(
+            &gpu_context,
             data,
             &mut offset,
             cfg.n_layers,
             cfg.dim * cfg.n_kv_heads * head_size,
         );
         let wo = init_param(
+            &gpu_context,
             data,
             &mut offset,
             cfg.n_layers,
             cfg.dim * cfg.n_heads * head_size,
         );
-        let rms_post_att = init_param(data, &mut offset, cfg.n_layers, cfg.dim);
+        let rms_post_att = init_param(&gpu_context, data, &mut offset, cfg.n_layers, cfg.dim);
 
-        let w1 = init_param(data, &mut offset, cfg.n_layers, cfg.dim * cfg.hidden_dim);
-        let w2 = init_param(data, &mut offset, cfg.n_layers, cfg.dim * cfg.hidden_dim);
-        let w3 = init_param(data, &mut offset, cfg.n_layers, cfg.dim * cfg.hidden_dim);
+        let w1 = init_param(&gpu_context, data, &mut offset, cfg.n_layers, cfg.dim * cfg.hidden_dim);
+        let w2 = init_param(&gpu_context, data, &mut offset, cfg.n_layers, cfg.dim * cfg.hidden_dim);
+        let w3 = init_param(&gpu_context, data, &mut offset, cfg.n_layers, cfg.dim * cfg.hidden_dim);
 
-        let rms_final = init_param(data, &mut offset, 1, cfg.dim);
+        let rms_final = init_param(&gpu_context, data, &mut offset, 1, cfg.dim);
 
         let weights = TransformerWeights {
-            token_embedding_table: SliceOrVec::Slice(emb_tab),
+            token_embedding_table: emb_tab.clone(),
             wq,
             wk,
             wv,
@@ -172,16 +171,16 @@ impl<'a> Transformer<'a> {
         };
 
         let state = TransformerState {
-            x: Vector::new(gpu_context, cfg.dim as usize),
-            xb: Vector::new(gpu_context, cfg.dim as usize),
-            xb2: Vector::new(gpu_context, cfg.dim as usize),
-            xb3: Vector::new(gpu_context, (cfg.head_size * cfg.n_heads) as usize),
-            hb: Vector::new(gpu_context, cfg.hidden_dim as usize),
-            hb2: Vector::new(gpu_context, cfg.hidden_dim as usize),
-            q: Vector::new(gpu_context, (cfg.head_size * cfg.n_heads) as usize),
-            key_cache: Vector::new(gpu_context, (cfg.n_layers * cfg.seq_len * kv_dim) as usize),
-            value_cache: Vector::new(gpu_context, (cfg.n_layers * cfg.seq_len * kv_dim) as usize),
-            logits: Vector::new(gpu_context, cfg.vocab_size as usize),
+            x: Vector::new(&gpu_context, cfg.dim as usize),
+            xb: Vector::new(&gpu_context, cfg.dim as usize),
+            xb2: Vector::new(&gpu_context, cfg.dim as usize),
+            xb3: Vector::new(&gpu_context, (cfg.head_size * cfg.n_heads) as usize),
+            hb: Vector::new(&gpu_context, cfg.hidden_dim as usize),
+            hb2: Vector::new(&gpu_context, cfg.hidden_dim as usize),
+            q: Vector::new(&gpu_context, (cfg.head_size * cfg.n_heads) as usize),
+            key_cache: Cache::new(&gpu_context, (cfg.n_layers * cfg.seq_len * kv_dim) as usize),
+            value_cache: Cache::new(&gpu_context, (cfg.n_layers * cfg.seq_len * kv_dim) as usize),
+            logits: Vector::new(&gpu_context, cfg.vocab_size as usize),
         };
 
         return Transformer {
@@ -211,7 +210,7 @@ impl<'a> Transformer<'a> {
 
         for l in 0..p.n_layers {
             rmsnorm(
-                &mut s.xb,
+                &mut s.xb.data_mut(),
                 x,
                 &w.w_rms_att[(l * dim) as usize..(l * dim + dim) as usize],
                 dim as usize,
@@ -230,12 +229,12 @@ impl<'a> Transformer<'a> {
                 &s.xb,
                 &w.wq[(l * dim * att_dim) as usize..(l * dim * att_dim + dim * att_dim) as usize],
             );
-            matmul_s(
+            matmul(
                 k,
                 &s.xb,
                 &w.wk[(l * dim * kv_dim) as usize..(l * dim * kv_dim + dim * kv_dim) as usize],
             );
-            matmul_s(
+            matmul(
                 v,
                 &s.xb,
                 &w.wv[(l * dim * kv_dim) as usize..(l * dim * kv_dim + dim * kv_dim) as usize],
@@ -278,7 +277,7 @@ impl<'a> Transformer<'a> {
                     };
 
                     for v in 0..rotn {
-                        let vec: &mut [f32] = if v == 0 { &mut s.q } else { k };
+                        let vec: &mut [f32] = if v == 0 { s.q.data_mut() } else { k.data_mut() };
                         let v0: f32 = vec[((i * head_size) + j) as usize];
                         let v1: f32 = vec[(((i * head_size) + j) + (head_size / 2)) as usize];
 
@@ -293,7 +292,7 @@ impl<'a> Transformer<'a> {
                 .par_chunks_mut(head_size as usize)
                 .enumerate()
                 .for_each(|(h, xb)| {
-                    let q = &s.q[(h as u32 * head_size) as usize
+                    let q = &s.q.data()[(h as u32 * head_size) as usize
                         ..(h as u32 * head_size + head_size) as usize];
 
                     let att = &mut vec![0.0; p.seq_len as usize];
@@ -307,7 +306,7 @@ impl<'a> Transformer<'a> {
                         let mut score: f32 = 0.0;
 
                         for i in 0..head_size {
-                            score += q[i as usize] * k[i as usize];
+                            score += q[i as usize] * k.data()[i as usize];
                         }
 
                         score /= (head_size as f32).sqrt();
@@ -327,7 +326,7 @@ impl<'a> Transformer<'a> {
                         let a = att[t as usize];
 
                         for i in 0..head_size {
-                            xb[i as usize] += a * v[i as usize];
+                            xb[i as usize] += a * v.data()[i as usize];
                         }
                     }
                 });
@@ -401,14 +400,14 @@ impl<'a> Transformer<'a> {
 
         rmsnorm(
             x,
-            &s.xb,
-            w.w_rms_final,
+            s.xb.data(),
+            w.w_rms_final.as_matrix(),
             dim as usize,
             p.rms_norm_eps,
             p.model_type == ModelType::GEMMA,
         );
 
-        matmul(&mut s.logits, s.x, w.w_cls);
+        matmul(&mut s.logits, &s.x, &w.w_cls.as_matrix());
 
         s.logits.data_mut()
     }

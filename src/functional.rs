@@ -94,7 +94,7 @@ pub fn random_f32(state: u64) -> f32 {
 pub fn rmsnorm(
     o: &mut [f32],
     x: &[f32],
-    weight: Matrix<'_>,
+    weight: &Matrix<'_>,
     size: usize,
     eps: f32,
     add_unit_offset: bool,

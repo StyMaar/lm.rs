@@ -15,7 +15,7 @@ use memmap2::Mmap;
 use rayon::prelude::*;
 use std::mem::size_of;
 
-fn init_param<'a>(gpu_context: WgpuContext<'a>, offset: &mut usize, n: u32, size_each: u32) -> Tensor<'a> {
+fn init_param<'a>(gpu_context: WgpuContext<'a>, offset: &mut usize, n: u32, size_each: u32) -> Weights<'a> {
 
     todo!()
     // let ptr: &[f32] =
@@ -51,26 +51,26 @@ pub struct TransformerArgs {
 }
 
 pub struct TransformerWeights<'a> {
-    token_embedding_table: Tensor<'a>,
+    token_embedding_table: Weights<'a>,
 
     // Attention
-    wq: Tensor<'a>,
-    wk: Tensor<'a>,
-    wv: Tensor<'a>,
-    wo: Tensor<'a>,
+    wq: Weights<'a>,
+    wk: Weights<'a>,
+    wv: Weights<'a>,
+    wo: Weights<'a>,
 
-    w_rms_att: Tensor<'a>,
+    w_rms_att: Weights<'a>,
 
     // FFN
-    w1: Tensor<'a>,
-    w2: Tensor<'a>,
-    w3: Tensor<'a>,
+    w1: Weights<'a>,
+    w2: Weights<'a>,
+    w3: Weights<'a>,
 
-    w_rms_post_att: Tensor<'a>,
+    w_rms_post_att: Weights<'a>,
 
-    w_rms_final: Tensor<'a>,
+    w_rms_final: Weights<'a>,
 
-    w_cls: Tensor<'a>,
+    w_cls: Weights<'a>,
 }
 
 pub struct TransformerState {
@@ -172,16 +172,16 @@ impl<'a> Transformer<'a> {
         };
 
         let state = TransformerState {
-            x: vec![0.0; cfg.dim as usize],
-            xb: vec![0.0; cfg.dim as usize],
-            xb2: vec![0.0; cfg.dim as usize],
-            xb3: vec![0.0; (cfg.head_size * cfg.n_heads) as usize],
-            hb: vec![0.0; cfg.hidden_dim as usize],
-            hb2: vec![0.0; cfg.hidden_dim as usize],
-            q: vec![0.0; (cfg.head_size * cfg.n_heads) as usize],
-            key_cache: vec![0.0; (cfg.n_layers * cfg.seq_len * kv_dim) as usize],
-            value_cache: vec![0.0; (cfg.n_layers * cfg.seq_len * kv_dim) as usize],
-            logits: vec![0.0; cfg.vocab_size as usize],
+            x: Vector::new(gpu_context, cfg.dim as usize),
+            xb: Vector::new(gpu_context, cfg.dim as usize),
+            xb2: Vector::new(gpu_context, cfg.dim as usize),
+            xb3: Vector::new(gpu_context, (cfg.head_size * cfg.n_heads) as usize),
+            hb: Vector::new(gpu_context, cfg.hidden_dim as usize),
+            hb2: Vector::new(gpu_context, cfg.hidden_dim as usize),
+            q: Vector::new(gpu_context, (cfg.head_size * cfg.n_heads) as usize),
+            key_cache: Vector::new(gpu_context, (cfg.n_layers * cfg.seq_len * kv_dim) as usize),
+            value_cache: Vector::new(gpu_context, (cfg.n_layers * cfg.seq_len * kv_dim) as usize),
+            logits: Vector::new(gpu_context, cfg.vocab_size as usize),
         };
 
         return Transformer {
@@ -195,7 +195,7 @@ impl<'a> Transformer<'a> {
         let p = self.args;
         let w = &self.weights;
         let s = &mut self.state;
-        let x = &mut s.x;
+        let x = s.x.data_mut();
         let dim = p.dim;
         let head_size = p.head_size;
         let att_dim = p.n_heads * head_size;
@@ -204,8 +204,9 @@ impl<'a> Transformer<'a> {
         let hidden_dim = p.hidden_dim;
         let gs = p.group_size;
 
+        // 
         x.copy_from_slice(
-            &w.token_embedding_table[(token * dim) as usize..(token * dim + dim) as usize],
+            &w.token_embedding_table[(token * dim) as usize..(token * dim + dim) as usize].data(),
         );
 
         for l in 0..p.n_layers {
@@ -229,12 +230,12 @@ impl<'a> Transformer<'a> {
                 &s.xb,
                 &w.wq[(l * dim * att_dim) as usize..(l * dim * att_dim + dim * att_dim) as usize],
             );
-            matmul(
+            matmul_s(
                 k,
                 &s.xb,
                 &w.wk[(l * dim * kv_dim) as usize..(l * dim * kv_dim + dim * kv_dim) as usize],
             );
-            matmul(
+            matmul_s(
                 v,
                 &s.xb,
                 &w.wv[(l * dim * kv_dim) as usize..(l * dim * kv_dim + dim * kv_dim) as usize],
@@ -288,7 +289,7 @@ impl<'a> Transformer<'a> {
                 }
             }
 
-            s.xb3
+            s.xb3.data_mut()
                 .par_chunks_mut(head_size as usize)
                 .enumerate()
                 .for_each(|(h, xb)| {
@@ -331,18 +332,20 @@ impl<'a> Transformer<'a> {
                     }
                 });
 
+
             matmul(
                 &mut s.xb2,
                 &s.xb3,
                 &w.wo[(l * dim * att_dim) as usize..(l * dim * att_dim + dim * att_dim) as usize],
             );
 
+            let xb2 = s.xb2.data();
             for i in 0..dim {
-                x[i as usize] += s.xb2[i as usize];
+                x[i as usize] += xb2[i as usize];
             }
 
             rmsnorm(
-                &mut s.xb,
+                &mut s.xb.data_mut(),
                 x,
                 &w.w_rms_post_att[(l * dim) as usize..(l * dim + dim) as usize],
                 dim as usize,
@@ -369,14 +372,16 @@ impl<'a> Transformer<'a> {
                     ..(l * dim * hidden_dim + dim * hidden_dim) as usize],
             );
 
+            let hb = s.hb.data_mut(); 
+            let hb2 = s.hb2.data();
             for i in 0..hidden_dim {
-                let mut val = s.hb[i as usize];
+                let mut val = hb[i as usize];
 
                 val *= 1.0 / (1.0 + (-val).exp());
 
-                val *= s.hb2[i as usize];
+                val *= hb[i as usize];
 
-                s.hb[i as usize] = val;
+                hb[i as usize] = val;
             }
 
             matmul(
@@ -386,12 +391,13 @@ impl<'a> Transformer<'a> {
                     ..(l * dim * hidden_dim + dim * hidden_dim) as usize],
             );
 
+            let xb = s.xb.data();
             for i in 0..dim {
-                x[i as usize] += s.xb[i as usize];
+                x[i as usize] += xb[i as usize];
             }
         }
 
-        s.xb.copy_from_slice(x);
+        s.xb.data_mut().copy_from_slice(x);
 
         rmsnorm(
             x,
@@ -402,8 +408,9 @@ impl<'a> Transformer<'a> {
             p.model_type == ModelType::GEMMA,
         );
 
-        matmul(&mut s.logits, x, w.w_cls);
+        matmul(&mut s.logits, s.x, w.w_cls);
 
-        &mut s.logits
+        s.logits.data_mut()
     }
 }
+

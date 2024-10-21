@@ -4,6 +4,7 @@ use rayon::prelude::*;
 use std::{convert::TryInto, ops::DerefMut};
 use std::ops::Deref;
 use wide::{f32x8, i32x8};
+use crate::gpu::Matrix;
 
 /// Allocs to use either a `Vec` or a slice in the same place
 pub enum SliceOrVec<'a, T> {
@@ -93,7 +94,7 @@ pub fn random_f32(state: u64) -> f32 {
 pub fn rmsnorm(
     o: &mut [f32],
     x: &[f32],
-    weight: &[f32],
+    weight: Matrix<'_>,
     size: usize,
     eps: f32,
     add_unit_offset: bool,
@@ -115,7 +116,7 @@ pub fn rmsnorm(
 
     for j in 0..n_simd {
         let x_vec = f32x8::from(&x[j * 8..j * 8 + 8]);
-        let w_vec = f32x8::from(&weight[j * 8..j * 8 + 8]);
+        let w_vec = f32x8::from(&weight.data()[j * 8..j * 8 + 8]);
 
         let r = if add_unit_offset {
             ((1.0 + w_vec) * (ss * x_vec)).to_array()

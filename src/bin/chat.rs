@@ -2,6 +2,7 @@ use lmrs::sampler::Sampler;
 use lmrs::tokenizer::Tokenizer;
 use lmrs::transformer::ModelType;
 use lmrs::transformer::Transformer;
+use lmrs::gpu::WgpuContext;
 
 use chrono::Local;
 use clap::Parser;
@@ -59,7 +60,9 @@ fn main() {
     let file = File::open(model_path).expect("Error opening model file");
     let data = unsafe { Mmap::map(&file).expect("MMap failed") };
 
-    let mut model = Transformer::new(&data);
+    let gpu_context = WgpuContext::new(&data);
+
+    let mut model = Transformer::new(&gpu_context);
 
     let seed: u64 = match args.seed {
         Some(seed_value) => seed_value,

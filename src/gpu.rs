@@ -2,7 +2,7 @@ use std::clone::Clone;
 use std::ops::{Deref, DerefMut, Drop, Index, IndexMut, Range};
 
 pub struct WgpuContext<'a> {
-    data: &'a [u8],
+    pub data: &'a [u8],
 }
 
 impl<'a> WgpuContext<'a> {

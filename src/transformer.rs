@@ -5,7 +5,7 @@ use crate::functional::u8_to_f32_slice;
 use crate::functional::u8_to_i8_slice;
 
 use crate::functional::SliceOrVec;
-use crate::gpu::{matmul, Cache, Vector, Weights, WgpuContext};
+use crate::gpu::{matmul, Cache, Vector, Weights, WgpuContext, WgpuContextBuilder};
 use crate::quantization::*;
 
 use memmap2::Mmap;
@@ -13,7 +13,7 @@ use rayon::prelude::*;
 use std::mem::size_of;
 
 fn init_param<'a>(
-    gpu_context: &WgpuContext<'a>,
+    gpu_context: &'a Option<WgpuContext<'a>>,
     offset: &mut usize,
     n: u32,
     size_each: u32,
@@ -96,18 +96,19 @@ pub struct Transformer<'a> {
 }
 
 impl<'a> Transformer<'a> {
-    pub fn new(gpu_context: &'a WgpuContext) -> Transformer<'a> {
+    // pour une question de lifetime du WgpuContext qu'on créé à l'intérieur de la fonction et qu'on ne peut pas `move` on passe une option `None`et on `mem::replace` dedans. Comme ça le WgpuContext ne bouge pas et a la bonne
+    pub fn new(data: &'a[u8], gpu_context : &'a mut Option<WgpuContext<'a>>) -> Transformer<'a> {
         assert_eq!(
-            gpu_context.data[0..4],
+            data[0..4],
             [0x6c, 0x6d, 0x72, 0x73],
             "Model not in lm.rs format."
         );
 
-        let lmrs_version = slice_to_u32(&gpu_context.data[4..8]);
+        let lmrs_version = slice_to_u32(&data[4..8]);
 
         println!("LMRS version: {}", lmrs_version);
 
-        let (head, body, _) = unsafe { gpu_context.data[8..54].align_to::<TransformerArgs>() };
+        let (head, body, _) = unsafe { data[8..54].align_to::<TransformerArgs>() };
 
         assert!(head.is_empty(), "Data was not aligned");
 
@@ -121,54 +122,71 @@ impl<'a> Transformer<'a> {
 
         let kv_dim = cfg.head_size * cfg.n_kv_heads;
 
-        let emb_tab = init_param(&gpu_context, &mut offset, 1, cfg.vocab_size * cfg.dim);
-        let rms_att = init_param(&gpu_context, &mut offset, cfg.n_layers, cfg.dim);
+        let mut gpu_context_builder = WgpuContextBuilder::new();
+
+         let x = gpu_context_builder.make_state( cfg.dim as usize);
+         let xb = gpu_context_builder.make_state( cfg.dim as usize);
+         let xb2 = gpu_context_builder.make_state( cfg.dim as usize);
+         let xb3= gpu_context_builder.make_state( (cfg.head_size * cfg.n_heads) as usize);
+         let hb= gpu_context_builder.make_state( cfg.hidden_dim as usize);
+         let hb2= gpu_context_builder.make_state( cfg.hidden_dim as usize);
+         let q= gpu_context_builder.make_state( (cfg.head_size * cfg.n_heads) as usize);
+         let key_cache= gpu_context_builder.make_state( (cfg.n_layers * cfg.seq_len * kv_dim) as usize);
+         let value_cache= gpu_context_builder.make_state( (cfg.n_layers * cfg.seq_len * kv_dim) as usize);
+         let logits= gpu_context_builder.make_state( cfg.vocab_size as usize);
+        
+        gpu_context.replace(gpu_context_builder.finalize(data));
+
+//        let gpu_context = gpu_context.as_mut().expect("The GPU context has been initialized");
+   
+        let emb_tab = init_param(gpu_context, &mut offset, 1, cfg.vocab_size * cfg.dim);
+        let rms_att = init_param(gpu_context, &mut offset, cfg.n_layers, cfg.dim);
         let wq = init_param(
-            &gpu_context,
+            gpu_context,
             &mut offset,
             cfg.n_layers,
             cfg.dim * cfg.n_heads * head_size,
         );
         let wk = init_param(
-            &gpu_context,
+            gpu_context,
             &mut offset,
             cfg.n_layers,
             cfg.dim * cfg.n_kv_heads * head_size,
         );
         let wv = init_param(
-            &gpu_context,
+            gpu_context,
             &mut offset,
             cfg.n_layers,
             cfg.dim * cfg.n_kv_heads * head_size,
         );
         let wo = init_param(
-            &gpu_context,
+            gpu_context,
             &mut offset,
             cfg.n_layers,
             cfg.dim * cfg.n_heads * head_size,
         );
-        let rms_post_att = init_param(&gpu_context, &mut offset, cfg.n_layers, cfg.dim);
+        let rms_post_att = init_param(gpu_context, &mut offset, cfg.n_layers, cfg.dim);
 
         let w1 = init_param(
-            &gpu_context,
+            gpu_context,
             &mut offset,
             cfg.n_layers,
             cfg.dim * cfg.hidden_dim,
         );
         let w2 = init_param(
-            &gpu_context,
+            gpu_context,
             &mut offset,
             cfg.n_layers,
             cfg.dim * cfg.hidden_dim,
         );
         let w3 = init_param(
-            &gpu_context,
+            gpu_context,
             &mut offset,
             cfg.n_layers,
             cfg.dim * cfg.hidden_dim,
         );
 
-        let rms_final = init_param(&gpu_context, &mut offset, 1, cfg.dim);
+        let rms_final = init_param(gpu_context, &mut offset, 1, cfg.dim);
 
         let weights = TransformerWeights {
             token_embedding_table: emb_tab.clone(),
@@ -186,16 +204,16 @@ impl<'a> Transformer<'a> {
         };
 
         let state = TransformerState {
-            x: Vector::new(&gpu_context, cfg.dim as usize),
-            xb: Vector::new(&gpu_context, cfg.dim as usize),
-            xb2: Vector::new(&gpu_context, cfg.dim as usize),
-            xb3: Vector::new(&gpu_context, (cfg.head_size * cfg.n_heads) as usize),
-            hb: Vector::new(&gpu_context, cfg.hidden_dim as usize),
-            hb2: Vector::new(&gpu_context, cfg.hidden_dim as usize),
-            q: Vector::new(&gpu_context, (cfg.head_size * cfg.n_heads) as usize),
-            key_cache: Cache::new(&gpu_context, (cfg.n_layers * cfg.seq_len * kv_dim) as usize),
-            value_cache: Cache::new(&gpu_context, (cfg.n_layers * cfg.seq_len * kv_dim) as usize),
-            logits: Vector::new(&gpu_context, cfg.vocab_size as usize),
+            x: Vector::new(gpu_context, x),
+            xb: Vector::new(gpu_context, xb),
+            xb2: Vector::new(gpu_context, xb2),
+            xb3: Vector::new(gpu_context, xb3),
+            hb: Vector::new(gpu_context, hb),
+            hb2: Vector::new(gpu_context, hb2),
+            q: Vector::new(gpu_context, q),
+            key_cache: Cache::new(gpu_context, key_cache),
+            value_cache: Cache::new(gpu_context, value_cache),
+            logits: Vector::new(gpu_context, logits),
         };
 
         return Transformer {

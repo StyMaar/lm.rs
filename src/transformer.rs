@@ -97,7 +97,7 @@ pub struct Transformer<'a> {
 
 impl<'a> Transformer<'a> {
     // pour une question de lifetime du WgpuContext qu'on créé à l'intérieur de la fonction et qu'on ne peut pas `move` on passe une option `None`et on `mem::replace` dedans. Comme ça le WgpuContext ne bouge pas et a la bonne place
-    pub fn new(data: &'a[u8], gpu_context : &'a mut Option<WgpuContext<'a>>) -> Transformer<'a> {
+    pub fn new(data: &'a [u8], gpu_context: &'a mut Option<WgpuContext<'a>>) -> Transformer<'a> {
         assert_eq!(
             data[0..4],
             [0x6c, 0x6d, 0x72, 0x73],
@@ -124,23 +124,27 @@ impl<'a> Transformer<'a> {
 
         let mut gpu_context_builder = WgpuContextBuilder::new();
 
-         let x = gpu_context_builder.make_state( cfg.dim as usize);
-         let xb = gpu_context_builder.make_state( cfg.dim as usize);
-         let xb2 = gpu_context_builder.make_state( cfg.dim as usize);
-         let xb3= gpu_context_builder.make_state( (cfg.head_size * cfg.n_heads) as usize);
-         let hb= gpu_context_builder.make_state( cfg.hidden_dim as usize);
-         let hb2= gpu_context_builder.make_state( cfg.hidden_dim as usize);
-         let q= gpu_context_builder.make_state( (cfg.head_size * cfg.n_heads) as usize);
-         let key_cache= gpu_context_builder.make_state( (cfg.n_layers * cfg.seq_len * kv_dim) as usize);
-         let value_cache= gpu_context_builder.make_state( (cfg.n_layers * cfg.seq_len * kv_dim) as usize);
-         let logits= gpu_context_builder.make_state( cfg.vocab_size as usize);
-        
+        let x = gpu_context_builder.make_state(cfg.dim as usize);
+        let xb = gpu_context_builder.make_state(cfg.dim as usize);
+        let xb2 = gpu_context_builder.make_state(cfg.dim as usize);
+        let xb3 = gpu_context_builder.make_state((cfg.head_size * cfg.n_heads) as usize);
+        let hb = gpu_context_builder.make_state(cfg.hidden_dim as usize);
+        let hb2 = gpu_context_builder.make_state(cfg.hidden_dim as usize);
+        let q = gpu_context_builder.make_state((cfg.head_size * cfg.n_heads) as usize);
+        let key_cache =
+            gpu_context_builder.make_state((cfg.n_layers * cfg.seq_len * kv_dim) as usize);
+        let value_cache =
+            gpu_context_builder.make_state((cfg.n_layers * cfg.seq_len * kv_dim) as usize);
+        let logits = gpu_context_builder.make_state(cfg.vocab_size as usize);
+
         gpu_context.replace(pollster::block_on(gpu_context_builder.finalize(data)));
 
-         let gpu_context = gpu_context.as_ref().expect("GPU context has been initialized");
+        let gpu_context = gpu_context
+            .as_ref()
+            .expect("GPU context has been initialized");
 
-//        let gpu_context = gpu_context.as_mut().expect("The GPU context has been initialized");
-   
+        //        let gpu_context = gpu_context.as_mut().expect("The GPU context has been initialized");
+
         let emb_tab = init_param(gpu_context, &mut offset, 1, cfg.vocab_size * cfg.dim);
         let rms_att = init_param(gpu_context, &mut offset, cfg.n_layers, cfg.dim);
         let wq = init_param(

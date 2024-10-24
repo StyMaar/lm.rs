@@ -2,7 +2,6 @@ use lmrs::sampler::Sampler;
 use lmrs::tokenizer::Tokenizer;
 use lmrs::transformer::ModelType;
 use lmrs::transformer::Transformer;
-use lmrs::gpu::WgpuContext;
 
 use chrono::Local;
 use clap::Parser;

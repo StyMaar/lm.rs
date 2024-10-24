@@ -58,13 +58,12 @@ impl WgpuContextBuilder{
         let WgpuContextBuilder{ state_buffer_size, temporary_buffer_size} = self;
 
 
-        let state_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let state_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("State Buffer"),
-            mapped_at_creation: false,
-            size: (state_buffer_size) as wgpu::BufferAddress,
+            contents: bytemuck::cast_slice(&data),// TODO is bytemuck necessary at all?
             usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
+                | wgpu::BufferUsages::COPY_DST 
+                | wgpu::BufferUsages::COPY_SRC, //COPY_DST et COPY_SRC ne sont sans doute pas nécessaire pour ce buffer
         });
 
         let weights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -198,12 +197,6 @@ pub struct WgpuContext<'a> {
     temporary_buffer: wgpu::Buffer, // buffer where the output of the multiplication is stored temporarily
     output_staging_buffer: wgpu::Buffer, // the buffer to send value back to the CPU
 }
-
-//impl WgpuContext {
-//    async fn new(data: &'a [u8]) -> WgpuContext {
-
-//        
-//}
 
 enum TensorContent {
     InGPUMemory,
@@ -340,10 +333,110 @@ impl<'a> Index<Range<usize>> for Weights<'a> {
     }
 }
 
+
+// La multiplication a lieu entre le statebuffer (qui contient l'input et l'output) et le weightbuffer (qui contient la matrice)
+// la destination de la multiplication est le temporary buffer et on doit ensuite copier le résultat vers le statebuffer
+// remarque en fait on va plutôt faire directement la multiplication au bon endroit dans le staging buffer
+// 
 pub fn matmul<'a>(output: &mut Vector<'a>, input: &Vector<'a>, matrix: &Matrix<'a>) {
     assert!(
         std::ptr::eq(input.gpu_context, matrix.gpu_context),
         "Input vector and matrix must live in the same GPU context"
-    );
-    todo!()
+    ); // TODO vérifier aussi pour output
+
+   
+          let context = input.gpu_context;
+
+
+    // if the Vector content has been copied to CPU memory to be mutated, copy it back to the GPU memory before doing the operation
+    if let TensorContent::InRam(ref input_vec) = input.tensor_content {
+          // Local buffer contents -> GPU storage buffer
+          // Adds a write buffer command to the queue. This command is more complicated
+          // than it appears.
+
+          context.queue.write_buffer(
+              &context.state_buffer,
+              input.range_start as u64, // TODO: check off by one error
+              bytemuck::cast_slice(input_vec), //TODO je ne suis pas sûr que bytemuck serve à quelque chose ici
+          );
+          log::info!("Wrote to buffer.");
+   }
+
+   // TODO il faut utiliser un autre buffer pour passer les indices des deux vecteurs et de la matrice
+   // il remplacera le temporary buffer qui n'a pas d'intérêt
+   // TODO il faudra ensuite ré-écrire le shader dans ce sens
+
+    let mut command_encoder = context
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+    {
+        let mut compute_pass = command_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None,
+        });
+        compute_pass.set_pipeline(&context.pipeline);
+        compute_pass.set_bind_group(0, &context.bind_group, &[]);
+
+        let output_size = output.range_end - output.range_start; // TODO check off by one error
+        compute_pass.dispatch_workgroups(output_size as u32, 1, 1);
+    }
+    // We finish the compute pass by dropping it.
+    
+    // Finalize the command encoder, add the contained commands to the queue and flush.
+    context.queue.submit(Some(command_encoder.finish()));
+    log::info!("Submitted commands.");
+
+   // TODO il est possible qu'on ait besoin de faire un device.poll ici.
+
 }
+
+
+//    // Finally time to get our results.
+//    // First we get a buffer slice which represents a chunk of the buffer (which we
+//    // can't access yet).
+//    // We want the whole thing so use unbounded range.
+//    let buffer_slice = context.output_staging_buffer.slice(..);
+//    // Now things get complicated. WebGPU, for safety reasons, only allows either the GPU
+//    // or CPU to access a buffer's contents at a time. We need to "map" the buffer which means
+//    // flipping ownership of the buffer over to the CPU and making access legal. We do this
+//    // with `BufferSlice::map_async`.
+//    //
+//    // The problem is that map_async is not an async function so we can't await it. What
+//    // we need to do instead is pass in a closure that will be executed when the slice is
+//    // either mapped or the mapping has failed.
+//    //
+//    // The problem with this is that we don't have a reliable way to wait in the main
+//    // code for the buffer to be mapped and even worse, calling get_mapped_range or
+//    // get_mapped_range_mut prematurely will cause a panic, not return an error.
+//    //
+//    // Using channels solves this as awaiting the receiving of a message from
+//    // the passed closure will force the outside code to wait. It also doesn't hurt
+//    // if the closure finishes before the outside code catches up as the message is
+//    // buffered and receiving will just pick that up.
+//
+//    (sender, receiver) = std::sync::mpsc();
+//    buffer_slice.map_async(wgpu::MapMode::Read, move |r| sender.send(r).unwrap());
+//    // In order for the mapping to be completed, one of three things must happen.
+//    // One of those can be calling `Device::poll`. This isn't necessary on the web as devices
+//    // are polled automatically but natively, we need to make sure this happens manually.
+//    // `Maintain::Wait` will cause the thread to wait on native but not on WebGpu.
+//    context
+//        .device
+//        .poll(wgpu::Maintain::wait())
+//        .panic_on_timeout();
+//    log::info!("Device polled.");
+//    // Now we await the receiving and panic if anything went wrong because we're lazy.
+//    receiver.recv().unwrap().unwrap();
+//    log::info!("Result received.");
+//    // NOW we can call get_mapped_range.
+//    {
+//        let view = buffer_slice.get_mapped_range();
+//        output_vec.copy_from_slice(bytemuck::cast_slice(&view));
+//    }
+//    log::info!("Results written to local buffer.");
+//    // We need to make sure all `BufferView`'s are dropped before we do what we're about
+//    // to do.
+//    // Unmap so that we can copy to the staging buffer in the next iteration.
+//    context.output_staging_buffer.unmap();
+//

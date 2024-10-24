@@ -13,7 +13,7 @@ use rayon::prelude::*;
 use std::mem::size_of;
 
 fn init_param<'a>(
-    gpu_context: &'a Option<WgpuContext<'a>>,
+    gpu_context: &'a WgpuContext<'a>,
     offset: &mut usize,
     n: u32,
     size_each: u32,
@@ -96,7 +96,7 @@ pub struct Transformer<'a> {
 }
 
 impl<'a> Transformer<'a> {
-    // pour une question de lifetime du WgpuContext qu'on créé à l'intérieur de la fonction et qu'on ne peut pas `move` on passe une option `None`et on `mem::replace` dedans. Comme ça le WgpuContext ne bouge pas et a la bonne
+    // pour une question de lifetime du WgpuContext qu'on créé à l'intérieur de la fonction et qu'on ne peut pas `move` on passe une option `None`et on `mem::replace` dedans. Comme ça le WgpuContext ne bouge pas et a la bonne place
     pub fn new(data: &'a[u8], gpu_context : &'a mut Option<WgpuContext<'a>>) -> Transformer<'a> {
         assert_eq!(
             data[0..4],
@@ -135,7 +135,9 @@ impl<'a> Transformer<'a> {
          let value_cache= gpu_context_builder.make_state( (cfg.n_layers * cfg.seq_len * kv_dim) as usize);
          let logits= gpu_context_builder.make_state( cfg.vocab_size as usize);
         
-        gpu_context.replace(gpu_context_builder.finalize(data));
+        gpu_context.replace(pollster::block_on(gpu_context_builder.finalize(data)));
+
+         let gpu_context = gpu_context.as_ref().expect("GPU context has been initialized");
 
 //        let gpu_context = gpu_context.as_mut().expect("The GPU context has been initialized");
    

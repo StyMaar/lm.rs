@@ -1,9 +1,9 @@
 use std::clone::Clone;
 use std::ops::{Deref, DerefMut, Drop, Index, IndexMut, Range};
 use std::cmp;
+use wgpu::util::DeviceExt;
 
 pub struct WgpuContextBuilder{
-//   data: &'a [u8],
    state_buffer_size: usize,
    temporary_buffer_size:usize,
 }
@@ -32,8 +32,153 @@ impl WgpuContextBuilder{
    }
 
    // create the GPU context
-   pub fn finalize<'a>(self, data: &'a [u8])-> WgpuContext<'a>{
-      todo!();
+   pub async fn finalize<'a>(self, data: &'a [u8])-> WgpuContext<'a>{
+
+      let instance = wgpu::Instance::default();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .await
+            .unwrap();
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: None,
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::downlevel_defaults(),
+                    memory_hints: wgpu::MemoryHints::Performance,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Our shader, kindly compiled with Naga.
+        let shader = device.create_shader_module(wgpu::include_wgsl!("matmul.wgsl"));
+
+        let WgpuContextBuilder{ state_buffer_size, temporary_buffer_size} = self;
+
+
+        let state_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("State Buffer"),
+            mapped_at_creation: false,
+            size: (state_buffer_size) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+        });
+
+        let weights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Weight Buffer"),
+            contents: bytemuck::cast_slice(&data),// TODO is bytemuck necessary at all?
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST 
+                | wgpu::BufferUsages::COPY_SRC, //COPY_DST et COPY_SRC ne sont sans doute pas nécessaire pour ce buffer
+        });
+
+        let temporary_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Temporary output Buffer"),
+            size: (temporary_buffer_size) as wgpu::BufferAddress,
+            mapped_at_creation: false,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC, //COPY_DST est sans doute inutile
+        });
+
+        let output_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (temporary_buffer_size) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+
+        // This can be though of as the function signature for our CPU-GPU function.
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        // Going to have this be None just to be safe.
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        // Going to have this be None just to be safe.
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        // Going to have this be None just to be safe.
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        // This ties actual resources stored in the GPU to our metaphorical function
+        // through the binding slots we defined above.
+
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: state_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: weights_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: temporary_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None,
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "main",
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        WgpuContext {
+            device,
+            queue,
+            pipeline,
+            bind_group,
+            state_buffer,
+            weights_buffer,
+            temporary_buffer,
+            output_staging_buffer,
+            data,
+        }
    }
 }
 
@@ -57,145 +202,7 @@ pub struct WgpuContext<'a> {
 //impl WgpuContext {
 //    async fn new(data: &'a [u8]) -> WgpuContext {
 
-//        let instance = wgpu::Instance::default();
-//        let adapter = instance
-//            .request_adapter(&wgpu::RequestAdapterOptions::default())
-//            .await
-//            .unwrap();
-//        let (device, queue) = adapter
-//            .request_device(
-//                &wgpu::DeviceDescriptor {
-//                    label: None,
-//                    required_features: wgpu::Features::empty(),
-//                    required_limits: wgpu::Limits::downlevel_defaults(),
-//                    memory_hints: wgpu::MemoryHints::Performance,
-//                },
-//                None,
-//            )
-//            .await
-//            .unwrap();
-//
-//        // Our shader, kindly compiled with Naga.
-//        let shader = device.create_shader_module(wgpu::include_wgsl!("gpu/shader.wgsl"));
-//
-//        let input_vector_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-//            label: Some("Vector Buffer"),
-//            mapped_at_creation: false,
-//            size: (input_size * 4usize) as wgpu::BufferAddress,
-//            usage: wgpu::BufferUsages::STORAGE
-//                | wgpu::BufferUsages::COPY_DST
-//                | wgpu::BufferUsages::COPY_SRC,
-//        });
-//
-//        let matrix_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-//            label: Some("Matrix Buffer"),
-//            contents: bytemuck::cast_slice(&matrix),
-//            usage: wgpu::BufferUsages::STORAGE
-//                | wgpu::BufferUsages::COPY_DST
-//                | wgpu::BufferUsages::COPY_SRC,
-//        });
-//
-//        let output_vector_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-//            label: Some("Vector Buffer"),
-//            size: (output_size * 4usize) as wgpu::BufferAddress,
-//            mapped_at_creation: false,
-//            usage: wgpu::BufferUsages::STORAGE
-//                | wgpu::BufferUsages::COPY_DST
-//                | wgpu::BufferUsages::COPY_SRC,
-//        });
-//
-//        let output_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-//            label: None,
-//            size: (output_size * 4usize) as wgpu::BufferAddress,
-//            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-//            mapped_at_creation: false,
-//        });
-//
-//        // This can be though of as the function signature for our CPU-GPU function.
-//        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-//            label: None,
-//            entries: &[
-//                wgpu::BindGroupLayoutEntry {
-//                    binding: 0,
-//                    visibility: wgpu::ShaderStages::COMPUTE,
-//                    ty: wgpu::BindingType::Buffer {
-//                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-//                        has_dynamic_offset: false,
-//                        // Going to have this be None just to be safe.
-//                        min_binding_size: None,
-//                    },
-//                    count: None,
-//                },
-//                wgpu::BindGroupLayoutEntry {
-//                    binding: 1,
-//                    visibility: wgpu::ShaderStages::COMPUTE,
-//                    ty: wgpu::BindingType::Buffer {
-//                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-//                        has_dynamic_offset: false,
-//                        // Going to have this be None just to be safe.
-//                        min_binding_size: None,
-//                    },
-//                    count: None,
-//                },
-//                wgpu::BindGroupLayoutEntry {
-//                    binding: 2,
-//                    visibility: wgpu::ShaderStages::COMPUTE,
-//                    ty: wgpu::BindingType::Buffer {
-//                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-//                        has_dynamic_offset: false,
-//                        // Going to have this be None just to be safe.
-//                        min_binding_size: None,
-//                    },
-//                    count: None,
-//                },
-//            ],
-//        });
-//        // This ties actual resources stored in the GPU to our metaphorical function
-//        // through the binding slots we defined above.
-//        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-//            label: None,
-//            layout: &bind_group_layout,
-//            entries: &[
-//                wgpu::BindGroupEntry {
-//                    binding: 0,
-//                    resource: input_vector_buffer.as_entire_binding(),
-//                },
-//                wgpu::BindGroupEntry {
-//                    binding: 1,
-//                    resource: matrix_buffer.as_entire_binding(),
-//                },
-//                wgpu::BindGroupEntry {
-//                    binding: 2,
-//                    resource: output_vector_buffer.as_entire_binding(),
-//                },
-//            ],
-//        });
-//
-//        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-//            label: None,
-//            bind_group_layouts: &[&bind_group_layout],
-//            push_constant_ranges: &[],
-//        });
-//        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-//            label: None,
-//            layout: Some(&pipeline_layout),
-//            module: &shader,
-//            entry_point: "main",
-//            compilation_options: Default::default(),
-//            cache: None,
-//        });
-//
-//        WgpuContext {
-//            device,
-//            queue,
-//            pipeline,
-//            bind_group,
-//            output_staging_buffer,
-//            input_vector_buffer,
-//            matrix_buffer,
-//            output_vector_buffer,
-//        }
-//    }
+//        
 //}
 
 enum TensorContent {
@@ -209,7 +216,7 @@ pub struct Cache<'a> {
 }
 
 impl<'a> Cache<'a> {
-    pub fn new(gpu_context: &'a Option<WgpuContext<'a>>, gpu_index: GpuIndex) -> Cache<'a> {
+    pub fn new(gpu_context: &'a WgpuContext<'a>, gpu_index: GpuIndex) -> Cache<'a> {
         // les vecteurs sont initializés à 0.0
         todo!()
     }
@@ -264,7 +271,7 @@ pub struct Vector<'a> {
 }
 
 impl<'a> Vector<'a> {
-    pub fn new(gpu_context: &'a Option<WgpuContext<'a>>, gpu_index: GpuIndex) -> Vector<'a> {
+    pub fn new(gpu_context: &'a WgpuContext<'a>, gpu_index: GpuIndex) -> Vector<'a> {
         // les vecteurs sont initializés à 0.0
         todo!()
     }
@@ -304,6 +311,8 @@ impl<'a> Matrix<'a> {
 /// Weights are bags of matrices
 pub struct Weights<'a> {
     gpu_context: &'a WgpuContext<'a>,
+   begining: u32,
+   end: u32,
 }
 
 impl<'a> Weights<'a> {

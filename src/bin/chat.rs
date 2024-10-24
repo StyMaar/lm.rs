@@ -60,9 +60,9 @@ fn main() {
     let file = File::open(model_path).expect("Error opening model file");
     let data = unsafe { Mmap::map(&file).expect("MMap failed") };
 
-    let gpu_context = WgpuContext::new(&data);
+    let mut gpu_context = None;
 
-    let mut model = Transformer::new(&gpu_context);
+    let mut model = Transformer::new(&data, &mut gpu_context);
 
     let seed: u64 = match args.seed {
         Some(seed_value) => seed_value,

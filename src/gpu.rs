@@ -5,7 +5,7 @@ use wgpu::util::DeviceExt;
 
 pub struct WgpuContextBuilder {
     state_buffer_size: usize,
-    temporary_buffer_size: usize,
+    output_staging_buffer_size: usize,
 }
 
 impl WgpuContextBuilder {
@@ -13,7 +13,7 @@ impl WgpuContextBuilder {
         WgpuContextBuilder {
             //         data,
             state_buffer_size: 0,
-            temporary_buffer_size: 0,
+            output_staging_buffer_size: 0,
         }
     }
 
@@ -22,7 +22,7 @@ impl WgpuContextBuilder {
         let index_end = self.state_buffer_size + size;
 
         self.state_buffer_size += size;
-        self.temporary_buffer_size = cmp::max(self.temporary_buffer_size, size);
+        self.output_staging_buffer_size = cmp::max(self.output_staging_buffer_size, size);
 
         GpuIndex {
             begin: index_begin,
@@ -55,7 +55,7 @@ impl WgpuContextBuilder {
 
         let WgpuContextBuilder {
             state_buffer_size,
-            temporary_buffer_size,
+            output_staging_buffer_size,
         } = self;
 
         let state_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -74,18 +74,18 @@ impl WgpuContextBuilder {
                 | wgpu::BufferUsages::COPY_SRC, //COPY_DST et COPY_SRC ne sont sans doute pas nécessaire pour ce buffer
         });
 
-        let temporary_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Temporary output Buffer"),
-            size: (temporary_buffer_size) as wgpu::BufferAddress,
+        let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Index Buffer"),
+            size: 16 as wgpu::BufferAddress, // 4 u32 indexes, 4x4bytes = 16 bytes
             mapped_at_creation: false,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC, //COPY_DST est sans doute inutile
+                | wgpu::BufferUsages::COPY_SRC, //COPY_SRC est sans doute inutile
         });
 
         let output_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: (temporary_buffer_size) as wgpu::BufferAddress,
+            size: (output_staging_buffer_size) as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -146,7 +146,7 @@ impl WgpuContextBuilder {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: temporary_buffer.as_entire_binding(),
+                    resource: index_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -172,7 +172,7 @@ impl WgpuContextBuilder {
             bind_group,
             state_buffer,
             weights_buffer,
-            temporary_buffer,
+            index_buffer,
             output_staging_buffer,
             data,
         }
@@ -192,7 +192,7 @@ pub struct WgpuContext<'a> {
     bind_group: wgpu::BindGroup,
     state_buffer: wgpu::Buffer, // the buffer where the transformer state is stored
     weights_buffer: wgpu::Buffer, // the buffer for the transformer weights
-    temporary_buffer: wgpu::Buffer, // buffer where the output of the multiplication is stored temporarily
+    index_buffer: wgpu::Buffer, // buffer where the indexes of the multiplication parameters are stored
     output_staging_buffer: wgpu::Buffer, // the buffer to send value back to the CPU
 }
 
@@ -354,12 +354,15 @@ pub fn matmul<'a>(output: &mut Vector<'a>, input: &Vector<'a>, matrix: &Matrix<'
             input.range_start as u64,        // TODO: check off by one error
             bytemuck::cast_slice(input_vec), //TODO je ne suis pas sûr que bytemuck serve à quelque chose ici
         );
-        log::info!("Wrote to buffer.");
+        log::info!("Wrote to state buffer.");
     }
 
-    // TODO il faut utiliser un autre buffer pour passer les indices des deux vecteurs et de la matrice
-    // il remplacera le temporary buffer qui n'a pas d'intérêt
-    // TODO il faudra ensuite ré-écrire le shader dans ce sens
+    
+        context.queue.write_buffer(
+            &context.index_buffer,
+            0u64,
+            bytemuck::cast_slice(&[matrix.range_start, input.range_start, output.range_start, output.range_end]),
+        );
 
     let mut command_encoder = context
         .device
@@ -373,7 +376,7 @@ pub fn matmul<'a>(output: &mut Vector<'a>, input: &Vector<'a>, matrix: &Matrix<'
         compute_pass.set_pipeline(&context.pipeline);
         compute_pass.set_bind_group(0, &context.bind_group, &[]);
 
-        let output_size = output.range_end - output.range_start; // TODO check off by one error
+        let output_size = output.range_end - output.range_start + 1; // TODO check off by one error
         compute_pass.dispatch_workgroups(output_size as u32, 1, 1);
     }
     // We finish the compute pass by dropping it.

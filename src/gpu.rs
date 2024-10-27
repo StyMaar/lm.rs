@@ -60,7 +60,7 @@ impl WgpuContextBuilder {
 
         let state_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("State Buffer"),
-            contents: bytemuck::cast_slice(&data), // TODO is bytemuck necessary at all?
+            contents: bytemuck::cast_slice(&vec!), // TODO is bytemuck necessary at all?
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC, //COPY_DST et COPY_SRC ne sont sans doute pas nécessaire pour ce buffer
